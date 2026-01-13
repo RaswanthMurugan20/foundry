@@ -8,7 +8,11 @@ import csv
 import gc
 import math
 import random
+import json
+from collections import Counter
+import torch
 from pathlib import Path
+import sys
 
 import numpy as np
 from atomworks.io.utils.visualize import view
@@ -20,7 +24,8 @@ from mpnn.inference_engines.mpnn import MPNNInferenceEngine
 from biotite.structure import get_residue_starts, rmsd, superimpose
 from biotite.sequence import ProteinSequence
 from atomworks.constants import PROTEIN_BACKBONE_ATOM_NAMES
-from atomworks.io.utils.io_utils import to_cif_file
+from atomworks.io.utils.io_utils import load_any, to_cif_file
+from foundry.utils.alignment import weighted_rigid_align
 
 
 def set_seed(seed: int | None) -> None:
@@ -51,6 +56,77 @@ def compute_backbone_rmsd(aa_generated, aa_refolded) -> float:
     bb_refolded = aa_refolded[np.isin(aa_refolded.atom_name, PROTEIN_BACKBONE_ATOM_NAMES)]
     bb_refolded_fitted, _ = superimpose(bb_generated, bb_refolded)
     return float(rmsd(bb_generated, bb_refolded_fitted))
+
+
+def compute_theozyme_rmsd(
+    theozyme,
+    predicted,
+    diffused_index_map: dict | None,
+    min_atoms: int = 3,
+) -> float:
+    """
+    Align theozyme atoms to their mapped locations in the predicted structure using
+    weighted_rigid_align, then compute RMSD on the matched atoms.
+
+    Mapping is taken from diffused_index_map: keys like 'A81' -> values like 'B123'.
+    """
+    if not diffused_index_map:
+        return float("nan")
+
+    def parse_loc(loc: str):
+        loc = str(loc)
+        chain = "".join([c for c in loc if c.isalpha()]) or None
+        resid_str = "".join([c for c in loc if (c.isdigit() or c == "-")])
+        resid = int(resid_str) if resid_str else None
+        return chain, resid
+
+    theozyme = theozyme[0] if hasattr(theozyme, "stack_depth") and theozyme.stack_depth() else theozyme
+    predicted = predicted[0] if hasattr(predicted, "stack_depth") and predicted.stack_depth() else predicted
+
+    src_coords = []
+    dst_coords = []
+    for src_token, dst_token in diffused_index_map.items():
+        src_chain, src_res = parse_loc(src_token)
+        dst_chain, dst_res = parse_loc(dst_token)
+        if None in (src_chain, src_res, dst_chain, dst_res):
+            continue
+
+        src_atoms = theozyme[(theozyme.chain_id == src_chain) & (theozyme.res_id == src_res)]
+        dst_atoms = predicted[(predicted.chain_id == dst_chain) & (predicted.res_id == dst_res)]
+
+        if len(src_atoms) == 0 or len(dst_atoms) == 0:
+            continue
+
+        # Normalize atom names and drop hydrogens
+        src_names = np.char.strip(src_atoms.atom_name.astype(str))
+        dst_names = np.char.strip(dst_atoms.atom_name.astype(str))
+        src_is_h = np.char.startswith(np.char.upper(src_names), "H")
+        dst_is_h = np.char.startswith(np.char.upper(dst_names), "H")
+        src_names = src_names[~src_is_h]
+        dst_names = dst_names[~dst_is_h]
+        src_coords_raw = src_atoms.coord[~src_is_h]
+        dst_coords_raw = dst_atoms.coord[~dst_is_h]
+
+        shared_atoms = np.intersect1d(src_names, dst_names)
+        for name in shared_atoms:
+            src_coord = src_coords_raw[src_names == name][0]
+            dst_coord = dst_coords_raw[dst_names == name][0]
+            if np.any(np.isnan(src_coord)) or np.any(np.isnan(dst_coord)):
+                continue
+            src_coords.append(src_coord)
+            dst_coords.append(dst_coord)
+
+    if len(src_coords) < min_atoms or len(src_coords) != len(dst_coords):
+        return float("nan")
+
+    src_t = torch.tensor(src_coords, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+    dst_t = torch.tensor(dst_coords, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+
+    exists_mask = torch.ones(dst_t.shape[-2], dtype=torch.bool)
+    weights = torch.ones_like(dst_t[..., 0])
+    aligned_dst = weighted_rigid_align(src_t, dst_t, X_exists_L=exists_mask, w_L=weights)
+    rmsd_val = torch.sqrt(torch.mean((aligned_dst - src_t) ** 2)).item()
+    return float(rmsd_val)
 
 
 def write_metrics_csv(path: Path, rows: list[dict]) -> None:
@@ -117,6 +193,7 @@ def save_backbone_summary_and_plots(global_rows: list[dict], output_root: Path) 
         ("ranking_score", "ranking_score"),
         ("RMSD", "RMSD"),
         ("RMSE", "RMSE"),
+        ("theozyme_RMSD", "theozyme_RMSD"),
     ]
 
     x_vals = list(range(1, len(best_rows) + 1))
@@ -127,12 +204,25 @@ def save_backbone_summary_and_plots(global_rows: list[dict], output_root: Path) 
             val = row.get(key)
             y_vals.append(float(val) if val is not None else np.nan)
 
+        finite = [v for v in y_vals if not np.isnan(v)]
+        mean_val = np.nanmean(y_vals) if y_vals else np.nan
+        std_val = np.nanstd(y_vals) if y_vals else np.nan
+        if finite:
+            mode_val = Counter(finite).most_common(1)[0][0]
+        else:
+            mode_val = np.nan
+
+        def _fmt(x):
+            return f"{x:.3f}" if not np.isnan(x) else "nan"
+
         plt.figure(figsize=(10, 5))
-        plt.plot(x_vals, y_vals, marker="o", linewidth=1.5)
+        plt.scatter(x_vals, y_vals, marker="o")
         plt.title(f"Best-per-backbone {label}")
         plt.xlabel("Backbone #")
         plt.ylabel(label)
         plt.xticks(x_vals)
+        stats_label = f"mean={_fmt(mean_val)}, std={_fmt(std_val)}, mode={_fmt(mode_val)}"
+        plt.legend([stats_label], loc="upper right", frameon=True)
         plt.tight_layout()
         out_path = plots_dir / f"backbone_best_{key}.png"
         plt.savefig(out_path, dpi=150)
@@ -171,18 +261,21 @@ def main() -> None:
         ligand='L:G',
         unindex='A81-82,A105-109,A185,A228-231,A371',
     )
+    theozyme_atom_array = load_any(spec.input)
 
     conf = RFD3InferenceConfig(
         ckpt_path='/home/raswanth/.foundry/checkpoints/rfd3_latest.ckpt',
         diffusion_batch_size=args.diffusion_batch_size,
         dump_trajectories=True,
-        low_memory_mode=True,
+        # devices_per_node=4,
+        # low_memory_mode=True,
     )
     rfd3_model = RFD3InferenceEngine(**conf)
 
     rf3_engine = RF3InferenceEngine(
         ckpt_path='/home/raswanth/.foundry/checkpoints/rf3_foundry_01_24_latest_remapped.ckpt',
         verbose=False,
+        # devices_per_node=4
     )
 
     global_rows = []
@@ -203,10 +296,14 @@ def main() -> None:
             print(f"[Backbone {b + 1}/{total_backbones}] Processing backbone")
 
             backbone_atom_array = item.atom_array
+            backbone_metadata = getattr(item, "metadata", {}) or {}
             backbone_id = f"backbone_{b:04d}"
             backbone_dir = output_root / backbone_id
             backbone_dir.mkdir(parents=True, exist_ok=True)
             to_cif_file(backbone_atom_array, str(backbone_dir / "generated.cif"))
+            if backbone_metadata.get("diffused_index_map") is not None:
+                with open(backbone_dir / "diffused_index_map.json", "w") as f:
+                    json.dump(backbone_metadata["diffused_index_map"], f, indent=2)
 
             set_seed(None if args.seed is None else args.seed + 1000 * b)
             mpnn_engine_config = {
@@ -232,7 +329,7 @@ def main() -> None:
             backbone_rows = []
             best_row = None
 
-            for s, item in enumerate(mpnn_outputs):
+            for s, mpnn_item in enumerate(mpnn_outputs):
                 print(
                     f"[Backbone {b + 1}/{total_backbones}] "
                     f"Folding seq {s + 1}/{len(mpnn_outputs)}"
@@ -243,7 +340,7 @@ def main() -> None:
                 seq_dir = backbone_dir / seq_id
                 seq_dir.mkdir(parents=True, exist_ok=True)
 
-                mpnn_atom_array = item.atom_array
+                mpnn_atom_array = mpnn_item.atom_array
                 sequence = sequence_from_atom_array(mpnn_atom_array)
                 to_cif_file(mpnn_atom_array, str(seq_dir / "mpnn_design.cif"))
 
@@ -272,7 +369,11 @@ def main() -> None:
                     backbone_atom_array,
                     rf3_output.atom_array,
                 )
-
+                theozyme_rmsd = compute_theozyme_rmsd(
+                    theozyme_atom_array,
+                    rf3_output.atom_array,
+                    backbone_metadata.get("diffused_index_map"),
+                )
                 row = {
                     "backbone_id": backbone_id,
                     "seq_id": seq_id,
@@ -288,6 +389,10 @@ def main() -> None:
                     "ranking_score": summary.get("ranking_score"),
                     "RMSD": rmsd_value,
                     "RMSE": rmsd_value,
+                    "theozyme_RMSD": theozyme_rmsd,
+                    "diffused_index_map": json.dumps(backbone_metadata.get("diffused_index_map"))
+                    if backbone_metadata.get("diffused_index_map") is not None
+                    else None,
                 }
 
                 backbone_rows.append(row)
