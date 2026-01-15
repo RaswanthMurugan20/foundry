@@ -83,8 +83,10 @@ def compute_theozyme_rmsd(
     theozyme = theozyme[0] if hasattr(theozyme, "stack_depth") and theozyme.stack_depth() else theozyme
     predicted = predicted[0] if hasattr(predicted, "stack_depth") and predicted.stack_depth() else predicted
 
-    src_coords = []
-    dst_coords = []
+    align_src = []
+    align_dst = []
+    score_src = []
+    score_dst = []
     for src_token, dst_token in diffused_index_map.items():
         src_chain, src_res = parse_loc(src_token)
         dst_chain, dst_res = parse_loc(dst_token)
@@ -113,19 +115,39 @@ def compute_theozyme_rmsd(
             dst_coord = dst_coords_raw[dst_names == name][0]
             if np.any(np.isnan(src_coord)) or np.any(np.isnan(dst_coord)):
                 continue
-            src_coords.append(src_coord)
-            dst_coords.append(dst_coord)
+            # Backbone atoms for alignment
+            if name in ("N", "CA", "C"):
+                align_src.append(src_coord)
+                align_dst.append(dst_coord)
+            # All heavy atoms for scoring
+            score_src.append(src_coord)
+            score_dst.append(dst_coord)
 
-    if len(src_coords) < min_atoms or len(src_coords) != len(dst_coords):
+    if len(align_src) < 3 or len(score_src) == 0:
         return float("nan")
 
-    src_t = torch.tensor(src_coords, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
-    dst_t = torch.tensor(dst_coords, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+    align_src_arr = np.array(align_src, dtype=np.float32)
+    # Check non-collinearity of alignment atoms
+    centered = align_src_arr - align_src_arr.mean(axis=0, keepdims=True)
+    if np.linalg.matrix_rank(centered) < 2:
+        return float("nan")
+
+    # Combine alignment + scoring coords; weights ensure alignment uses backbone only
+    src_combined = np.vstack([align_src, score_src]).astype(np.float32)
+    dst_combined = np.vstack([align_dst, score_dst]).astype(np.float32)
+
+    src_t = torch.tensor(src_combined, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+    dst_t = torch.tensor(dst_combined, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
 
     exists_mask = torch.ones(dst_t.shape[-2], dtype=torch.bool)
-    weights = torch.ones_like(dst_t[..., 0])
+    weights = torch.zeros_like(dst_t[..., 0])
+    weights[..., : len(align_src)] = 1.0  # only backbone atoms drive alignment
+
     aligned_dst = weighted_rigid_align(src_t, dst_t, X_exists_L=exists_mask, w_L=weights)
-    rmsd_val = torch.sqrt(torch.mean((aligned_dst - src_t) ** 2)).item()
+    # Score RMSD over heavy atoms (the scoring part)
+    aligned_dst_score = aligned_dst[..., len(align_src) :, :]
+    src_score = src_t[..., len(align_src) :, :]
+    rmsd_val = torch.sqrt(torch.mean((aligned_dst_score - src_score) ** 2)).item()
     return float(rmsd_val)
 
 
