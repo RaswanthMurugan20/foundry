@@ -83,10 +83,9 @@ def compute_theozyme_rmsd(
     theozyme = theozyme[0] if hasattr(theozyme, "stack_depth") and theozyme.stack_depth() else theozyme
     predicted = predicted[0] if hasattr(predicted, "stack_depth") and predicted.stack_depth() else predicted
 
-    align_src = []
-    align_dst = []
-    score_src = []
-    score_dst = []
+    all_src_coords = []
+    all_dst_coords = []
+    all_is_backbone = []
     for src_token, dst_token in diffused_index_map.items():
         src_chain, src_res = parse_loc(src_token)
         dst_chain, dst_res = parse_loc(dst_token)
@@ -115,39 +114,33 @@ def compute_theozyme_rmsd(
             dst_coord = dst_coords_raw[dst_names == name][0]
             if np.any(np.isnan(src_coord)) or np.any(np.isnan(dst_coord)):
                 continue
-            # Backbone atoms for alignment
-            if name in ("N", "CA", "C"):
-                align_src.append(src_coord)
-                align_dst.append(dst_coord)
-            # All heavy atoms for scoring
-            score_src.append(src_coord)
-            score_dst.append(dst_coord)
+            all_src_coords.append(src_coord)
+            all_dst_coords.append(dst_coord)
+            all_is_backbone.append(name in ("N", "CA", "C"))
 
-    if len(align_src) < 3 or len(score_src) == 0:
+    if len(all_src_coords) == 0 or sum(all_is_backbone) < 3:
         return float("nan")
 
-    align_src_arr = np.array(align_src, dtype=np.float32)
+    src_arr = np.array(all_src_coords, dtype=np.float32)
+    dst_arr = np.array(all_dst_coords, dtype=np.float32)
+
+    is_bb = np.array(all_is_backbone, dtype=bool)
+
     # Check non-collinearity of alignment atoms
+    align_src_arr = src_arr[is_bb]
     centered = align_src_arr - align_src_arr.mean(axis=0, keepdims=True)
     if np.linalg.matrix_rank(centered) < 2:
         return float("nan")
 
-    # Combine alignment + scoring coords; weights ensure alignment uses backbone only
-    src_combined = np.vstack([align_src, score_src]).astype(np.float32)
-    dst_combined = np.vstack([align_dst, score_dst]).astype(np.float32)
-
-    src_t = torch.tensor(src_combined, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
-    dst_t = torch.tensor(dst_combined, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+    src_t = torch.tensor(src_arr, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
+    dst_t = torch.tensor(dst_arr, dtype=torch.float32).unsqueeze(0)  # [1, L, 3]
 
     exists_mask = torch.ones(dst_t.shape[-2], dtype=torch.bool)
     weights = torch.zeros_like(dst_t[..., 0])
-    weights[..., : len(align_src)] = 1.0  # only backbone atoms drive alignment
+    weights[..., is_bb] = 1.0  # only backbone atoms drive alignment
 
     aligned_dst = weighted_rigid_align(src_t, dst_t, X_exists_L=exists_mask, w_L=weights)
-    # Score RMSD over heavy atoms (the scoring part)
-    aligned_dst_score = aligned_dst[..., len(align_src) :, :]
-    src_score = src_t[..., len(align_src) :, :]
-    rmsd_val = torch.sqrt(torch.mean((aligned_dst_score - src_score) ** 2)).item()
+    rmsd_val = torch.sqrt(torch.mean((aligned_dst - src_t) ** 2)).item()
     return float(rmsd_val)
 
 
@@ -289,7 +282,7 @@ def main() -> None:
         ckpt_path='/home/raswanth/.foundry/checkpoints/rfd3_latest.ckpt',
         diffusion_batch_size=args.diffusion_batch_size,
         dump_trajectories=True,
-        # devices_per_node=4,
+        devices_per_node=4,
         # low_memory_mode=True,
     )
     rfd3_model = RFD3InferenceEngine(**conf)
@@ -297,7 +290,7 @@ def main() -> None:
     rf3_engine = RF3InferenceEngine(
         ckpt_path='/home/raswanth/.foundry/checkpoints/rf3_foundry_01_24_latest_remapped.ckpt',
         verbose=False,
-        # devices_per_node=4
+        devices_per_node=4
     )
 
     global_rows = []
@@ -387,6 +380,9 @@ def main() -> None:
                         mean_pae = None
                 if mean_pae is None:
                     mean_pae = summary.get("overall_pae")
+
+                print("rfd3 shape :",backbone_atom_array.coord.shape)
+                print("rf3 shape", rf3_output.atom_array.coord.shape)
                 rmsd_value = compute_backbone_rmsd(
                     backbone_atom_array,
                     rf3_output.atom_array,
