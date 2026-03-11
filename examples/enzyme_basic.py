@@ -10,7 +10,10 @@ import math
 import random
 import json
 from collections import Counter
+import socket
+import os
 import torch
+import torch.distributed as dist
 from pathlib import Path
 import sys
 
@@ -165,6 +168,20 @@ def clear_memory() -> None:
         pass
 
 
+def get_rank_world(fabric=None) -> tuple[int, int]:
+    """
+    Resolve (rank, world_size) from torch.distributed/Fabric/env, defaulting to (0,1).
+    """
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    world = int(os.environ.get("WORLD_SIZE", 1))
+    if fabric is not None:
+        rank = getattr(fabric, "global_rank", rank)
+        world = getattr(fabric, "world_size", world)
+    return rank, world
+
+
 def save_backbone_summary_and_plots(global_rows: list[dict], output_root: Path) -> None:
     if not global_rows:
         return
@@ -253,6 +270,8 @@ def main() -> None:
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--diffusion_batch_size", type=int, default=2)
     parser.add_argument("--n_batches", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes participating in distributed run.")
+    parser.add_argument("--checkpoint_every",type=int,default=400, help="If set, write summary CSV/plots every N backbones on rank 0.",)
     args = parser.parse_args()
 
     num_backbones = getattr(args, "num_backbones", None)
@@ -270,8 +289,32 @@ def main() -> None:
     output_root = Path(args.output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
+    # Auto-set devices_per_node from launcher env; prefer LOCAL_WORLD_SIZE (per-node procs) over total WORLD_SIZE.
+    devices_per_node = int(os.environ.get("LOCAL_WORLD_SIZE", 0)) or torch.cuda.device_count() or 1
+    # Pin this process to its local GPU to avoid all ranks piling onto cuda:0.
+    local_rank_env = os.environ.get("LOCAL_RANK")
+    if local_rank_env is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(int(local_rank_env) % devices_per_node)
+        except Exception:
+            pass
+    # Log per-rank device binding so we can verify all GPUs/nodes are used.
+    rank_env = os.environ.get("RANK")
+    world_env = os.environ.get("WORLD_SIZE")
+    local_world_env = os.environ.get("LOCAL_WORLD_SIZE")
+    current_device = torch.cuda.current_device() if torch.cuda.is_available() else None
+    current_device_name = torch.cuda.get_device_name(current_device) if torch.cuda.is_available() else None
+    print(
+        f"[Startup] host={socket.gethostname()} "
+        f"rank={rank_env}/{world_env} "
+        f"local_rank={local_rank_env}/{local_world_env} "
+        f"devices_per_node={devices_per_node} "
+        f"visible_cuda={torch.cuda.device_count()} "
+        f"current_device={current_device} ({current_device_name})"
+    )
+
     spec = DesignInputSpecification(
-        input='/home/raswanth/foundry/examples/Theozyme_DFT_resid_rfd3.pdb',
+        input='theozymes/Theozyme_DFT_resid_rfd3.pdb',
         length='380-420',
         ligand='L:G',
         unindex='A81-82,A105-109,A185,A228-231,A371',
@@ -282,7 +325,8 @@ def main() -> None:
         ckpt_path='/home/raswanth/.foundry/checkpoints/rfd3_latest.ckpt',
         diffusion_batch_size=args.diffusion_batch_size,
         dump_trajectories=True,
-        devices_per_node=4,
+        devices_per_node=devices_per_node,
+        num_nodes=args.num_nodes,
         # low_memory_mode=True,
     )
     rfd3_model = RFD3InferenceEngine(**conf)
@@ -290,7 +334,8 @@ def main() -> None:
     rf3_engine = RF3InferenceEngine(
         ckpt_path='/home/raswanth/.foundry/checkpoints/rf3_foundry_01_24_latest_remapped.ckpt',
         verbose=False,
-        devices_per_node=4
+        devices_per_node=devices_per_node,
+        num_nodes=args.num_nodes,
     )
 
     global_rows = []
@@ -301,6 +346,19 @@ def main() -> None:
     )
     set_seed(args.seed)
     outputs = rfd3_model.run(inputs=spec, n_batches=n_batches)
+    if dist.is_available() and dist.is_initialized():
+        gathered_outputs = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_outputs, outputs or {})
+        merged_outputs = {}
+        for out in gathered_outputs:
+            if out:
+                merged_outputs.update(out)
+        outputs = merged_outputs
+    fabric = getattr(rfd3_model, "trainer", None)
+    fabric = getattr(fabric, "fabric", None)
+    rank, world_size = get_rank_world(fabric)
+    # Use full world_size for sharding; outputs were gathered to every rank already.
+    shard_world_size = world_size
     for _, data in outputs.items():
         for item in data:
             if max_backbones is not None and backbone_index >= max_backbones:
@@ -308,11 +366,13 @@ def main() -> None:
 
             b = backbone_index
             backbone_index += 1
+            if shard_world_size > 1 and (b % shard_world_size) != rank:
+                continue
             print(f"[Backbone {b + 1}/{total_backbones}] Processing backbone")
 
             backbone_atom_array = item.atom_array
             backbone_metadata = getattr(item, "metadata", {}) or {}
-            backbone_id = f"backbone_{b:04d}"
+            backbone_id = f"backbone_{b:04d}_r{rank}"
             backbone_dir = output_root / backbone_id
             backbone_dir.mkdir(parents=True, exist_ok=True)
             to_cif_file(backbone_atom_array, str(backbone_dir / "generated.cif"))
@@ -351,13 +411,16 @@ def main() -> None:
                 )
                 set_seed(None if args.seed is None else args.seed + 1000 * b + s)
 
+                prune_threshold = 2.0
+
                 seq_id = f"seq_{s:04d}"
                 seq_dir = backbone_dir / seq_id
                 seq_dir.mkdir(parents=True, exist_ok=True)
 
                 mpnn_atom_array = mpnn_item.atom_array
                 sequence = sequence_from_atom_array(mpnn_atom_array)
-                to_cif_file(mpnn_atom_array, str(seq_dir / "mpnn_design.cif"))
+
+                mpnn_cif_path = seq_dir / "mpnn_design.cif"
 
                 example_id = f"{backbone_id}_{seq_id}"
                 input_structure = InferenceInput.from_atom_array(
@@ -368,7 +431,6 @@ def main() -> None:
                 rf3_output = rf3_outputs[example_id][0]
 
                 model_path = seq_dir / "refolded.cif"
-                to_cif_file(rf3_output.atom_array, str(model_path))
 
                 summary = rf3_output.summary_confidences
                 conf = rf3_output.confidences
@@ -381,8 +443,13 @@ def main() -> None:
                 if mean_pae is None:
                     mean_pae = summary.get("overall_pae")
 
-                print("rfd3 shape :",backbone_atom_array.coord.shape)
-                print("rf3 shape", rf3_output.atom_array.coord.shape)
+                bb_gen_count = np.isin(backbone_atom_array.atom_name, PROTEIN_BACKBONE_ATOM_NAMES).sum()
+                bb_ref_count = np.isin(rf3_output.atom_array.atom_name, PROTEIN_BACKBONE_ATOM_NAMES).sum()
+                print(
+                    f"[Rank {rank}] Backbone {backbone_id}/{seq_id} backbone atoms: "
+                    f"RFD3={bb_gen_count}, RF3={bb_ref_count}"
+                )
+
                 rmsd_value = compute_backbone_rmsd(
                     backbone_atom_array,
                     rf3_output.atom_array,
@@ -392,11 +459,27 @@ def main() -> None:
                     rf3_output.atom_array,
                     backbone_metadata.get("diffused_index_map"),
                 )
+
+                should_prune = (
+                    rmsd_value is not None
+                    and rmsd_value > prune_threshold
+                    and theozyme_rmsd is not None
+                    and not math.isnan(theozyme_rmsd)
+                    and theozyme_rmsd > prune_threshold
+                )
+
+                if not should_prune:
+                    to_cif_file(mpnn_atom_array, str(mpnn_cif_path))
+                    to_cif_file(rf3_output.atom_array, str(model_path))
+                    model_path_value = str(model_path)
+                else:
+                    model_path_value = None
+
                 row = {
                     "backbone_id": backbone_id,
                     "seq_id": seq_id,
                     "sequence": sequence,
-                    "model_path": str(model_path),
+                    "model_path": model_path_value,
                     "overall_pLDDT": summary.get("overall_plddt"),
                     "PAE": mean_pae,
                     "overall_PAE": summary.get("overall_pae"),
@@ -415,8 +498,12 @@ def main() -> None:
 
                 backbone_rows.append(row)
                 global_rows.append(row)
-                if best_row is None or rmsd_value < best_row["RMSD"]:
+                best_theozyme = None if best_row is None else best_row.get("theozyme_RMSD")
+                if best_row is None:
                     best_row = row
+                elif theozyme_rmsd is not None and not math.isnan(theozyme_rmsd):
+                    if best_theozyme is None or (not math.isnan(best_theozyme) and theozyme_rmsd < best_theozyme) or math.isnan(best_theozyme):
+                        best_row = row
 
                 if args.visualize and b == 0 and s == 0:
                     view(rf3_output.atom_array)
@@ -429,6 +516,7 @@ def main() -> None:
             if best_row:
                 print(
                     f"[Backbone {b:04d}] best RMSD {best_row['RMSD']:.2f} A | "
+                    f"[Backbone {b:04d}] best Theozyme_RMSD {best_row['theozyme_RMSD']:.2f} A | "
                     f"{best_row['seq_id']} | pLDDT {best_row['overall_pLDDT']:.3f} | "
                     f"rank {best_row['ranking_score']:.3f}"
                 )
@@ -436,14 +524,26 @@ def main() -> None:
             del mpnn_outputs, mpnn_model, backbone_atom_array
             clear_memory()
 
+            # Periodic summary checkpoint
+            if args.checkpoint_every and rank == 0 and (backbone_index % args.checkpoint_every == 0):
+                write_metrics_csv(output_root / "run_summary.csv", global_rows)
+                save_backbone_summary_and_plots(global_rows, output_root)
+
         if max_backbones is not None and backbone_index >= max_backbones:
             break
 
     del outputs
     clear_memory()
 
-    write_metrics_csv(output_root / "run_summary.csv", global_rows)
-    save_backbone_summary_and_plots(global_rows, output_root)
+    combined_rows = global_rows
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        gathered_rows = [None] * world_size
+        dist.all_gather_object(gathered_rows, global_rows)
+        combined_rows = [row for sub in gathered_rows if sub for row in sub]
+
+    if rank == 0:
+        write_metrics_csv(output_root / "run_summary.csv", combined_rows)
+        save_backbone_summary_and_plots(combined_rows, output_root)
 
 
 if __name__ == "__main__":
