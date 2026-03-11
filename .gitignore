@@ -184,6 +184,9 @@ ruff.toml
 
 # Development
 dev.py
+lib
+.gitmodules
+.ipd/
 
 # Pytest
 *.benchmarks/
@@ -222,6 +225,9 @@ logs/
 *.ckpt
 **/distillation/
 **/benchmarks/
+
+# macOS
+.DS_Store
 
 # AI
 **/CLAUDE.md
