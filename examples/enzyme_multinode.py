@@ -356,6 +356,7 @@ def main() -> None:
     parser.add_argument("--output_dir", type=str, default="/home/raswanth/foundry/enzyme_output_multi_node_new")
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--theozyme", type=str, default="/home/raswanth/foundry/examples/Theozyme_DFT_resid_rfd3.pdb")
+    parser.add_argument("--spec", type=str, default="base", help="Theozyme spec name from theozymes.json")
     parser.add_argument("--diffusion_batch_size", type=int, default=2)
     parser.add_argument("--n_batches", type=int, default=argparse.SUPPRESS)
     parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes participating in distributed run.")
@@ -363,7 +364,7 @@ def main() -> None:
     parser.add_argument(
         "--fixed_theozyme_residues",
         type=str,
-        default="A82,A301",
+        default="A82",
         help="Comma or space separated theozyme residue IDs to fix in LigandMPNN (e.g. 'A82,B301').",
     )
     parser.add_argument(
@@ -445,19 +446,8 @@ def main() -> None:
     local_n_batches = math.ceil(local_target_backbones / args.diffusion_batch_size) if local_target_backbones else 0
     rank_max_backbones = rank_end
 
-    # spec = DesignInputSpecification(
-    #     input=args.theozyme,
-    #     length='380-420',
-    #     ligand='L:G',
-    #     unindex='A81-82,A105-109,A185,A228-231,A371',
-    # )
-
-    spec = DesignInputSpecification(
-        input=args.theozyme,
-        length='380-420',
-        ligand='L:G',
-        unindex='A82,A104-106,A185,A228-231,A298-299,A301,A345,A371',
-    )
+    _specs = json.loads((Path(__file__).parent / 'theozymes.json').read_text())
+    spec = DesignInputSpecification(input=args.theozyme, **_specs[args.spec])
 
 
     theozyme_atom_array = load_any(spec.input)
