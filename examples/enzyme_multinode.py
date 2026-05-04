@@ -364,7 +364,7 @@ def main() -> None:
     parser.add_argument(
         "--fixed_theozyme_residues",
         type=str,
-        default="A82",
+        default="X82,X104,X105,X106,X107,X108,X109,X298",
         help="Comma or space separated theozyme residue IDs to fix in LigandMPNN (e.g. 'A82,B301').",
     )
     parser.add_argument(

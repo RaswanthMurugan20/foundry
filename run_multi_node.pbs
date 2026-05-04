@@ -1,8 +1,8 @@
 #!/bin/bash -l
 #PBS -N rfd3
-#PBS -A FoundEpidem
+#PBS -A FRAME-IDP
 #PBS -q prod
-#PBS -l select=20
+#PBS -l select=25
 #PBS -l walltime=01:30:00
 #PBS -l filesystems=home:eagle
 #PBS -j oe
@@ -19,7 +19,7 @@ NNODES=$(wc -l < "$PBS_NODEFILE")
 MASTER_ADDR=$(head -n 1 "$PBS_NODEFILE")
 MASTER_PORT=${MASTER_PORT:-29500}
 export TORCHRUN NNODES MASTER_ADDR MASTER_PORT
-BASE_OUT=${BASE_OUT:-/home/raswanth/foundry/enzyme_output_multi_node_new}
+BASE_OUT=${BASE_OUT:-/home/raswanth/foundry/enzyme_output/multi_node_00a0m0r}
 SEED_BASE=${SEED_BASE:-0}
 export BASE_OUT SEED_BASE
 
@@ -29,11 +29,12 @@ mpiexec --envall --cpu-bind=none -np "$NNODES" -ppn 1 -hostfile "$PBS_NODEFILE" 
   NODE_RANK=${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}}
   SEED=$((SEED_BASE + NODE_RANK))
   '"$TORCHRUN"' --nnodes='"$NNODES"' --nproc_per_node=4 --rdzv_backend=c10d --rdzv_endpoint='"$MASTER_ADDR:$MASTER_PORT"' --node_rank="$NODE_RANK" \
-    examples/enzyme_new.py \
+    examples/enzyme_multinode_v2.py \
       --output_dir "$BASE_OUT" \
       --n_batches 100 \
       --diffusion_batch_size 20 \
       --seqs_per_backbone 5 \
-      --theozyme theozymes/Theozyme-Y301K-full-edited.pdb
+      --theozyme theozymes/00A0M0R-theozyme.pdb \
+      --spec 00a0m0r \
       --seed "$SEED"
 '

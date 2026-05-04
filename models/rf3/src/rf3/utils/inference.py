@@ -564,7 +564,7 @@ def apply_ground_truth_conformer_selection(
     )
 
     existing = atom_array.get_annotation("ground_truth_conformer_policy")
-    existing[selection_mask] = GroundTruthConformerPolicy.ADD
+    existing[selection_mask] = GroundTruthConformerPolicy.REPLACE
     atom_array.set_annotation("ground_truth_conformer_policy", existing)
 
     return atom_array
