@@ -6,7 +6,6 @@ import numpy as np
 from atomworks.ml.encoding_definitions import AF3SequenceEncoding
 from biotite.structure import AtomArray
 
-from foundry.common import exists
 from foundry.constants import (
     TIP_BY_RESTYPE,
 )
@@ -96,8 +95,21 @@ def get_design_pattern_with_constraints(contig, length=None):
     fixed_parts = []
     pos_to_put_motif = []
 
+    suff = []  # suffixes for diffused regions P(optional),R,D
+
     for part in contig_parts:
-        if any(c.isalpha() for c in part):  # Detect parts containing letters as fixed
+        ## updating to include DNA and RNA generation
+        if part[-1] in ["R", "D"]:  ##Detect non-fixed RNA and DNA contig part
+            suff.append(part[-1])
+            part = part[:-1]
+            if "-" in part:
+                start, end = map(int, part.split("-"))
+            else:
+                start = end = int(part)
+            variable_ranges.append([start, end])
+            pos_to_put_motif.append(0)
+
+        elif any(c.isalpha() for c in part):  # Detect parts containing letters as fixed
             pn_unit_id, pn_unit_start, pn_unit_end = extract_pn_unit_info(part)
             fixed_parts.append([pn_unit_id, pn_unit_start, pn_unit_end])
             pos_to_put_motif.append(1)
@@ -110,6 +122,7 @@ def get_design_pattern_with_constraints(contig, length=None):
                 start = end = int(part)
             variable_ranges.append([start, end])
             pos_to_put_motif.append(0)
+            suff.append("P")
 
     # adjust the total length to solely for free residues
     num_motif_residues = sum([i[2] - i[1] + 1 for i in fixed_parts])
@@ -167,7 +180,7 @@ def get_design_pattern_with_constraints(contig, length=None):
                 atoms_with_motif.append(f"{pn_unit_id}{index}")
         elif pos_to_put_motif[idx] == 0:
             free_atom = num_free_atoms.pop(0)
-            atoms_with_motif.append(free_atom)
+            atoms_with_motif.append(str(free_atom) + suff.pop(0))
         elif pos_to_put_motif[idx] == 2:
             atoms_with_motif.append("/0")
 
@@ -264,17 +277,18 @@ def get_name_mask(
         elif query_names.upper() == "BKBN":
             names = ["N", "CA", "C", "O"]
         elif query_names.upper() == "TIP":
-            if not exists(source_resname):
+            if source_resname is None:
                 raise ComponentValidationError(
                     "TIP selection requires a residue name.",
                     component=str(source_resname),
                 )
-            names = TIP_BY_RESTYPE[source_resname]
-            if not exists(names):
+            tip_names = TIP_BY_RESTYPE[source_resname]
+            if tip_names is None:
                 raise ComponentValidationError(
                     "Residue does not define TIP atoms; use ALL, BKBN, or explicit names.",
                     component=str(source_resname),
                 )
+            names = tip_names
         elif query_names == "":
             names = []
         else:
