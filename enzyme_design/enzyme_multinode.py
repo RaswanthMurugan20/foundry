@@ -272,7 +272,7 @@ def save_backbone_summary_and_plots(global_rows: list[dict], output_root: Path) 
     summary_path = output_root / "best_per_backbone.csv"
     write_metrics_csv(summary_path, best_rows)
     filtered_rows = []
-    for row in best_rows:
+    for row in global_rows:
         rmsd_value = row.get("RMSD")
         theozyme_rmsd = row.get("theozyme_RMSD")
         if rmsd_value is None or theozyme_rmsd is None:
@@ -284,9 +284,9 @@ def save_backbone_summary_and_plots(global_rows: list[dict], output_root: Path) 
             continue
         if math.isnan(rmsd_value) or math.isnan(theozyme_rmsd):
             continue
-        if rmsd_value <= 2.0 and theozyme_rmsd <= 1.5:
+        if rmsd_value <= 2.0 and theozyme_rmsd <= 2.0:
             filtered_rows.append(row)
-    filtered_path = output_root / "best_per_backbone_filtered.csv"
+    filtered_path = output_root / "all_filtered.csv"
     write_metrics_csv(filtered_path, filtered_rows)
 
     try:
@@ -364,7 +364,7 @@ def main() -> None:
     parser.add_argument(
         "--fixed_theozyme_residues",
         type=str,
-        default="X82,X104,X105,X106,X107,X108,X109,X298",
+        default="X82,X104,X105,X106,X107,X108,X109,X298,X301",
         help="Comma or space separated theozyme residue IDs to fix in LigandMPNN (e.g. 'A82,B301').",
     )
     parser.add_argument(
@@ -517,7 +517,16 @@ def main() -> None:
                     if hasattr(theozyme_atom_array, "stack_depth") and theozyme_atom_array.stack_depth()
                     else theozyme_atom_array
                 )
+                # Build the set of residue keys actually present in this theozyme file.
+                # Tokens not found here are silently ignored regardless of diffused_index_map.
+                _res_starts = get_residue_starts(theozyme_src_array)
+                theozyme_present_keys = {
+                    f"{theozyme_src_array.chain_id[i]}{theozyme_src_array.res_id[i]}"
+                    for i in _res_starts
+                }
                 for token in fixed_tokens:
+                    if token not in theozyme_present_keys:
+                        continue
                     mapped_loc = diffused_index_map.get(token)
                     if not mapped_loc:
                         continue
@@ -578,7 +587,8 @@ def main() -> None:
                 )
                 set_seed(None if args.seed is None else args.seed + 1000 * b + s)
 
-                prune_threshold = 2.0
+                rmsd_threshold = 2.0
+                theozyme_threshold = 2.0
 
                 seq_id = f"seq_{s:04d}"
                 seq_dir = backbone_dir / seq_id
@@ -655,11 +665,11 @@ def main() -> None:
                 )
 
                 should_prune = (
-                    rmsd_value is not None
-                    and rmsd_value > prune_threshold
-                    and theozyme_rmsd is not None
-                    and not math.isnan(theozyme_rmsd)
-                    and theozyme_rmsd > prune_threshold
+                    rmsd_value is None
+                    or rmsd_value > rmsd_threshold
+                    or theozyme_rmsd is None
+                    or math.isnan(theozyme_rmsd)
+                    or theozyme_rmsd > theozyme_threshold
                 )
 
                 if not should_prune:

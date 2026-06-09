@@ -16,5 +16,5 @@ module load conda/2025-09-25
 conda activate rfd3
 
 # run your program
-torchrun --nproc_per_node=4 examples/enzyme_multinode.py --n_batches 1 --diffusion_batch_size 4 --seqs_per_backbone 1 --output_dir /home/raswanth/foundry/enzyme_output --theozyme theozymes/00A0M0R-theozyme.pdb --spec 00a0m0r
+torchrun --nproc_per_node=4 enzyme_design/enzyme_multinode.py --n_batches 1 --diffusion_batch_size 8 --seqs_per_backbone 1 --output_dir /home/raswanth/foundry/enzyme_output --theozyme theozymes/AWGY0WS-theozyme.pdb --spec awgy0ws
 

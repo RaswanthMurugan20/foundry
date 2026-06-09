@@ -68,5 +68,40 @@
     "length": "380-420",
     "ligand": "L:G",
     "unindex": "X82,X104-109,X185,X227-230,X298,X371"
+  },
+  "awgy0ws": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X107-110,X185,X227-231,X298,X371-372"
+  },
+  "myvs0wn": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X107,X185,X227-231,X298,X301,X371"
+  },
+  "ha0i0wg": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X105-107,X109,X185,X229-231,X298,X371"
+  },
+  "lassvwa": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X106-107,X109,X185,X227-231,X298,X371"
+  },
+  "yq0n0ra": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X105-107,X109-110,X185,X226-230,X298,X371"
+  },
+  "s00v0rs": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X105-107,X109-110,X185,X227-231,X298,X371"
+  },
+  "eg0w0wp": {
+    "length": "380-420",
+    "ligand": "L:G",
+    "unindex": "X81-82,X107,X109,X185,X228-231,X300-301,X345,X371"
   }
 }

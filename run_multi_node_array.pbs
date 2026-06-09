@@ -7,7 +7,7 @@
 #PBS -l filesystems=home:eagle
 #PBS -j oe
 #PBS -o rfd3_multi_node_array.log
-#PBS -J 0-9
+#PBS -J 16-18
 #PBS -r y
 
 cd "$PBS_O_WORKDIR"
@@ -17,11 +17,11 @@ module load conda/2025-09-25
 conda activate rfd3
 
 THEOZYMES=(
-    "theozymes/000CW0W-theozyme.pdb"
-    "theozymes/00A0M0R-theozyme.pdb"
-    "theozymes/00M0I0R-theozyme.pdb"
     "theozymes/00Y0LFH-theozyme.pdb"
     "theozymes/0H00Q0R-theozyme.pdb"
+    "theozymes/00A0M0R-theozyme.pdb"
+    "theozymes/00M0I0R-theozyme.pdb"
+    "theozymes/000CW0W-theozyme.pdb"
     "theozymes/0K0000W-theozyme.pdb"
     "theozymes/0T0000Y-theozyme.pdb"
     "theozymes/FNG00TF-theozyme.pdb"
@@ -29,14 +29,21 @@ THEOZYMES=(
     "theozymes/NK0GN0W-theozyme.pdb"
     "theozymes/TFM0WHS-theozyme.pdb"
     "theozymes/TTLAF0P-theozyme.pdb"
+    "theozymes/AWGY0WS-theozyme.pdb"
+    "theozymes/MYVS0WN-theozyme.pdb"
+    "theozymes/HA0I0WG-theozyme.pdb"
+    "theozymes/YQ0N0RA-theozyme.pdb"
+    "theozymes/LASSVWA-theozyme.pdb"
+    "theozymes/S00V0RS-theozyme.pdb"
+    "theozymes/EG0W0WP-theozyme.pdb"
 )
 
 SPECS=(
-    "000cw0w"
-    "00a0m0r"
-    "00m0i0r"
     "00y0lfh"
     "0h00q0r"
+    "00a0m0r"
+    "00m0i0r"
+    "000cw0w"
     "0k0000w"
     "0t0000y"
     "fng00tf"
@@ -44,6 +51,13 @@ SPECS=(
     "nk0gn0w"
     "tfm0whs"
     "ttlaf0p"
+    "awgy0ws"
+    "myvs0wn"
+    "ha0i0wg"
+    "yq0n0ra"
+    "lassvwa"
+    "s00v0rs"
+    "eg0w0wp"
 )
 
 IDX=${PBS_ARRAY_INDEX}
@@ -65,9 +79,9 @@ mpiexec --envall --cpu-bind=none -np "$NNODES" -ppn 1 -hostfile "$PBS_NODEFILE" 
   NODE_RANK=${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}}
   SEED=$((SEED_BASE + NODE_RANK))
   '"$TORCHRUN"' --nnodes='"$NNODES"' --nproc_per_node=4 --rdzv_backend=c10d --rdzv_endpoint='"$MASTER_ADDR:$MASTER_PORT"' --node_rank="$NODE_RANK" \
-    examples/enzyme_multinode.py \
+    enzyme_design/enzyme_multinode.py \
       --output_dir "$BASE_OUT" \
-      --n_batches 120 \
+      --n_batches 240 \
       --diffusion_batch_size 20 \
       --seqs_per_backbone 5 \
       --theozyme '"$THEOZYME"' \

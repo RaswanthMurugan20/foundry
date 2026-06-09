@@ -29,7 +29,7 @@ mpiexec --envall --cpu-bind=none -np "$NNODES" -ppn 1 -hostfile "$PBS_NODEFILE" 
   NODE_RANK=${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}}
   SEED=$((SEED_BASE + NODE_RANK))
   '"$TORCHRUN"' --nnodes='"$NNODES"' --nproc_per_node=4 --rdzv_backend=c10d --rdzv_endpoint='"$MASTER_ADDR:$MASTER_PORT"' --node_rank="$NODE_RANK" \
-    examples/enzyme_multinode_v2.py \
+    enzyme_design/enzyme_multinode_v2.py \
       --output_dir "$BASE_OUT" \
       --n_batches 100 \
       --diffusion_batch_size 20 \

@@ -1,5 +1,35 @@
 # Protein design with Foundry
 
+---
+
+## Fork: Enzyme Design with Theozymes
+
+> This is a fork of [RosettaCommons/foundry](https://github.com/RosettaCommons/foundry) focused on high-throughput enzyme backbone design using theozyme inputs. The additions below are specific to this fork and are not part of the upstream repository.
+
+### What's new in this fork
+
+- **Multi-node enzyme design pipeline** (`enzyme_design/enzyme_multinode.py`) — end-to-end RFD3 → LigandMPNN → RF3 script with distributed multi-node/multi-GPU support via `torchrun` and `mpiexec`. Generates backbones, designs sequences, refolds, and evaluates all in one run.
+
+- **Theozyme RMSD metric** — a new evaluation metric (`compute_theozyme_rmsd`) that measures how well refolded catalytic residues match the input theozyme geometry after weighted rigid alignment. Designs are filtered at backbone RMSD ≤ 2.0 Å **and** theozyme RMSD ≤ 2.0 Å, producing `all_filtered.csv` of high-confidence candidates.
+
+- **Spec-driven theozyme configuration** (`enzyme_design/theozymes.json`) — a JSON registry mapping named specs to diffusion parameters (target length, ligand residue, fixed residues). 21 theozyme variants are currently registered. New variants can be added without modifying the script.
+
+- **Curated theozyme PDB library** (`theozymes/`) — 21 ready-to-use theozyme structures including the DFT-optimised base theozyme, a Y301K variant, and 19 computationally designed variants. Ligand chain must be renamed to `L:G` before use.
+
+- **PBS job scripts for ALCF Polaris** (`run.pbs`, `run_multi_node_array.pbs`) — `run.pbs` runs a single-node 4-GPU debug job; `run_multi_node_array.pbs` is a PBS array job that launches 60-node runs in parallel across multiple theozymes (240 batches × 20 backbones each, ~4 800 backbones per theozyme).
+
+- **Analysis scripts** (`analysis/`) — two standalone post-processing tools for evaluating design outputs:
+  - `analyze_fold_diversity.py` — computes all-vs-all TM-scores across a directory of CIF structures, clusters folds via agglomerative clustering, and produces MDS fold-space visualisations.
+  - `analyze_cross_set_tm_heatmap.py` — computes cross-set TM-scores between two CIF directories (e.g., designs vs. references) and writes a heatmap PNG. Requires `TMalign` on `PATH`.
+
+- **Notebooks** (`examples/`) — exploratory Jupyter notebooks: `all.ipynb` (end-to-end model walkthrough), `enzymes.ipynb` (enzyme design experiments), and `ipd_design_pipeline_collab.ipynb` (collaborative pipeline notebook).
+
+**For full usage instructions, see [enzyme_design/ENZYME_MULTINODE_USAGE.md](enzyme_design/ENZYME_MULTINODE_USAGE.md).**
+
+---
+
+
+
 Foundry provides tooling and infrastructure for using and training all classes of models for protein design, including design (RFD3), inverse folding (ProteinMPNN) and protein folding (RF3).
 
 All models within Foundry rely on [AtomWorks](https://github.com/RosettaCommons/atomworks) - a unified framework for manipulating and processing biomolecular structures - for both training and inference. 
